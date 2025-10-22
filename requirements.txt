@@ -1,0 +1,11 @@
+streamlit
+pandas
+streamlit-aggrid==1.1.2.post2
+streamlit_js_eval
+streamlit_autorefresh
+numpy
+streamlit_option_menu
+streamlit_extras
+gspread
+oauth2client
+reportlab
