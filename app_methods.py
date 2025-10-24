@@ -1,6 +1,7 @@
 import datetime as dt
 import time
 import pytz
+import io
 
 import gspread
 import numpy as np
@@ -10,6 +11,18 @@ from oauth2client.service_account import ServiceAccountCredentials
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 from streamlit_option_menu import option_menu
 from streamlit_autorefresh import st_autorefresh
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Table,
+    TableStyle,
+    Paragraph,
+    Spacer,
+    Image,
+)
+from reportlab.lib.styles import getSampleStyleSheet
 
 
 south_africa_tz = pytz.timezone('Africa/Johannesburg')
@@ -36,6 +49,7 @@ def fetch_sheet_data(_sheet, name):
 
 client = get_gspread_client()
 invoice_workbook = client.open("invoices_app")
+# invoice_workbook = client.open("test_invoices_app")
 invoices = invoice_workbook.worksheet("cp_invoices")
 customers = invoice_workbook.worksheet("cp_customers")
 avonstock = invoice_workbook.worksheet("cp_avonstock")
@@ -71,14 +85,16 @@ class Production:
             st.cache_data.clear()
             st.rerun()
 
-        def merge_data(customer_data, invoice_data, stock_data):
-            df = customer_data.merge(invoice_data, on='CustomerID', how='left')
-            df = df.merge(stock_data, on='StockNo', how='left')
-            return df
+        def merge_data(customer_data, invoice_data, stock_data, paid="N", invoice_type=1):
+            df = customer_data.merge(invoice_data, on='CustomerID', how='inner')
+            df = df.merge(stock_data, on='StockNo', how='inner')
+            payment_df = df.loc[(df['Paid'] == paid) & (df['InvoiceType'] == invoice_type)].copy()
+            display_df = payment_df[['InvoiceNo', 'StockName', 'Quantity', 'UnitPrice', 'InvoiceTotal', 'CustomerName', 'CustomerSurname', 'CustomerCell', 'OrderDate', 'Paid']].copy()
+            return display_df
 
-        avon_data = merge_data(self.customers, self.invoices, self.avonstock)
-        detergent_data = merge_data(self.customers, self.invoices, self.detergentstock)
-        shop_data = merge_data(self.customers, self.invoices, self.shopstock)
+        not_paid_avon_data = merge_data(self.customers, self.invoices, self.avonstock, "N", 1)
+        not_paid_detergent_data = merge_data(self.customers, self.invoices, self.detergentstock, "N", 2)
+        not_paid_shop_data = merge_data(self.customers, self.invoices, self.shopstock, "N", 3)
 
         def sidebar_option_menu(m_options):
             m_icons = []
@@ -100,16 +116,23 @@ class Production:
 
         if sidebar_menu == 'Avon':
             avon_navigation = st.radio(label="Navigation", options=["Current Invoices", "Add Invoice", "Add New Customer"], horizontal=True)
-            
+
             if avon_navigation == "Current Invoices":
-                AgGrid(self.customers, height=400, key="All_Customers")
+                self.update_job(display_df=not_paid_avon_data, status_update="Paid", store_name="Avon", aggrid_key="avon_data")
             elif avon_navigation == "Add Invoice":
-                st.write("In Progress")
+                self.add_invoice(invoice_type_from_store='Avon', stock_type=self.avonstock, sheet=avonstock)
             elif avon_navigation == "Add New Customer":
                 self.add_customer()
 
         elif sidebar_menu == 'Detergents':
-            st.write('Detergents]')
+            detergent_navigation = st.radio(label="Navigation", options=["Current Invoices", "Add Invoice", "Add New Customer"], horizontal=True)
+
+            if detergent_navigation == "Current Invoices":
+                self.update_job(display_df=not_paid_detergent_data, status_update="Paid", store_name="Detergents", aggrid_key="detergent_data")
+            elif detergent_navigation == "Add Invoice":
+                self.add_invoice(invoice_type_from_store='Detergents', stock_type=self.detergentstock, sheet=detergentstock)
+            elif detergent_navigation == "Add New Customer":
+                self.add_customer()
         elif sidebar_menu == 'Koep en Loep':
             st.write('Koep en Loep')
 
@@ -178,3 +201,334 @@ class Production:
                 st.cache_data.clear()
                 time.sleep(1)
                 st.rerun()
+
+    def add_invoice(self, invoice_type_from_store=None, stock_type=None, sheet=None):
+        st.subheader("Add New Invoice")
+
+        invoice_type_dict = {
+            'Avon': 1,
+            'Detergents': 2,
+            'Koep en Loep': 3
+        }
+
+        def create_number_of_items(total_items, stock_data_list):
+            item_list = {}
+            for _ in range(int(total_items)):
+                tr_col1, tr_col2, tr_col3, tr_col4 = st.columns(4)
+
+                radio_key = f"item_type{_}"
+                if radio_key not in st.session_state:
+                    st.session_state[radio_key] = "New Item"
+
+                with tr_col1:
+                    item_multiselect = st.radio(label="Stock Selection", options=["New Item", "Existing Item"], horizontal=True, key=radio_key)
+                with tr_col2:
+                    if st.session_state[radio_key] == "New Item":
+                        item_selected = st.text_input("New Item Ordered", key=f"new_item_{_}")
+                    else:
+                        item_selected = st.selectbox(label="Exisiting Item Ordered", options=stock_data_list, key=f"existing_item_{_}")
+                with tr_col3:
+                    item_qty = st.number_input("Quantity", min_value=1, step=1, key=f"item_qty_{_}")
+                with tr_col4:
+                    item_value = st.number_input("Price", key=f"price{_}")
+
+                item_list[item_selected] = [item_qty, item_value]
+                st.divider()
+
+            return item_list
+
+
+        # Create Customer List
+        customer_temp = self.customers.copy()
+        customer_temp['FullName'] = customer_temp['CustomerName'] + ' ' + customer_temp['CustomerSurname']
+        customer_list = customer_temp['FullName'].unique().tolist()
+        customer_list.sort()
+
+        stock_data_list = stock_type['StockName'].unique().tolist()
+        stock_data_list.sort()
+
+
+        with st.container(border=True):
+            fr_col1, fr_col2 = st.columns(2)
+            with fr_col1:
+                customerfullname = st.selectbox(label='Customer', options=customer_list, key="customer")
+
+            sr_col1, sr_col2 = st.columns(2)
+            with sr_col1:
+                if st.session_state.get("reset_invoice_form", False):
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(("item_type", "new_item_", "existing_item_", "item_qty_", "price", "total_items_ordered")):
+                            del st.session_state[key]
+                    st.session_state["reset_invoice_form"] = False
+                total_items_ordered = st.number_input("Total Items", min_value=0, step=1, key="total_items_ordered")
+
+            if total_items_ordered > 0:
+
+                all_items_ordered = create_number_of_items(total_items=total_items_ordered, stock_data_list=stock_data_list)
+
+                def add_to_stock(items_ordered, stock_data_list, stock_data, sheet_to_update, stock_name):
+                    for item in items_ordered.items():
+                        if item[0] not in stock_data_list:
+                            j_list = stock_data["StockNo"].unique().tolist()
+                            j_list.sort()
+                            wid = int(j_list[-1]) + 1
+
+                            new_stock = {
+                                "StockNo": [wid],
+                                "StockName": [item[0]]
+                            }
+
+                            new_job_df = pd.DataFrame(new_stock)
+                            stock_data = pd.concat([stock_data, new_job_df], ignore_index=True)
+                            stock_data = stock_data.astype(str)
+                            sheet_to_update.update(
+                                [stock_data.columns.values.tolist()] + stock_data.values.tolist()
+                            )
+
+                            st.cache_data.clear()
+
+                    if stock_name == "Avon":
+                        self.avonstock = fetch_sheet_data(avonstock, 'avonstock')
+                        return self.avonstock
+                    elif stock_name == "Detergents":
+                        self.detergentstock = fetch_sheet_data(detergentstock, 'detergentstock')
+                        return self.detergentstock
+                    else:
+                        self.shopstock = fetch_sheet_data(shopstock, 'shopstock')
+                        return self.shopstock
+
+                if st.button("Add Invoice"):
+                    self.format_data()
+                    j_list = self.invoices["InvoiceNo"].unique().tolist()
+                    j_list.sort()
+                    wid = j_list[-1] + 1
+
+                    customerid_selection = customer_temp.loc[customer_temp["FullName"] == customerfullname, "CustomerID"].sum()
+                    new_stock_data = add_to_stock(items_ordered=all_items_ordered, stock_data_list=stock_data_list, stock_data=stock_type, sheet_to_update=sheet, stock_name=invoice_type_from_store)
+                    invoice_type = invoice_type_dict[invoice_type_from_store]
+
+
+                    for item in all_items_ordered.items():
+                        stocknoselection = new_stock_data.loc[new_stock_data["StockName"] == item[0], "StockNo"].sum()
+                        itemqty = item[1][0]
+                        unitprice = item[1][1]
+                        invoicetotal = unitprice * itemqty
+                        new_job = {
+                            "InvoiceNo": [wid],
+                            "CustomerID": [customerid_selection],
+                            "StockNo": [stocknoselection],
+                            "OrderDate": [self.today],
+                            "InvoiceType": [invoice_type],
+                            "Quantity": [itemqty],
+                            "UnitPrice": [unitprice],
+                            "InvoiceTotal": [invoicetotal],
+                            "Paid": ["N"],
+                        }
+
+                        new_job_df = pd.DataFrame(new_job)
+                        self.invoices = pd.concat([self.invoices, new_job_df], ignore_index=True)
+                        self.invoices = self.invoices.astype(str)
+                        invoices.update(
+                            [self.invoices.columns.values.tolist()] + self.invoices.values.tolist()
+                        )
+
+                    st.success(f"Invoice {wid} added!")
+                    st.session_state["reset_invoice_form"] = True
+
+                    # Optional: clear related session states if you want to fully reset inputs
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(("item_type", "new_item_", "existing_item_", "item_qty_", "price")):
+                            del st.session_state[key]
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+
+    def update_job(self, display_df, status_update, store_name ,aggrid_key):
+
+        # Create grid options
+        gb = GridOptionsBuilder.from_dataframe(display_df)
+        gb.configure_selection(
+            "multiple", use_checkbox=True
+        )  # Enable single row selection
+
+        grid_options = gb.build()
+
+        # Display the grid
+        grid_response = AgGrid(
+            display_df,
+            gridOptions=grid_options,
+            allow_unsafe_jscode=True,
+            enable_enterprise=False,
+            height=400,
+            key=aggrid_key,
+        )
+
+        # Get selected row data
+        selected_rows = pd.DataFrame(grid_response.get("selected_rows", []))
+        # st.write(selected_rows)
+
+        # Ensure selected_rows is not empty
+        if not selected_rows.empty:  # Check if there's at least one selected row
+            task_id = selected_rows["InvoiceNo"].tolist()
+
+            # Create a form to edit the status
+            new_status = status_update
+
+            btn_col1, btn_col2, btn_col3 = st.columns([0.5, 0.5, 2])
+            with btn_col1:
+                submit_button = st.button("Paid Invoice")
+
+            if submit_button:
+                for j_id in task_id:
+                    if new_status == "Paid":
+                        self.invoices["Paid"] = np.where(self.invoices["InvoiceNo"] == j_id, "Y", self.invoices["Paid"],)
+                        self.invoices.loc[self.invoices["InvoiceNo"] == j_id, "PaymentDate"] = {self.today}
+
+                        self.invoices = self.invoices.astype(str)
+                        invoices.update(
+                            [self.invoices.columns.values.tolist()]
+                            + self.invoices.values.tolist()
+                        )
+                st.success("Job has been updated")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+
+            with btn_col2:
+                delete_button = st.button("Delete Invoice")
+            if delete_button:
+                for i_id in task_id:
+                    jobs_to_delete = self.invoices.loc[
+                        self.invoices["InvoiceNo"] == i_id
+                    ].index
+
+                    # Adjust index for Google Sheets (1-based indexing)
+                    rows_to_delete = [
+                        index + 2 for index in jobs_to_delete
+                    ]  # +2 to skip the header row
+
+                    # Delete rows in reverse order to avoid shifting issues
+                    for row in sorted(rows_to_delete, reverse=True):
+                        invoices.delete_rows(row)
+
+                st.success("Invoice has been deleted")
+                st.cache_data.clear()
+                time.sleep(1)
+                st.rerun()
+
+            with btn_col3:
+                if st.button("Generate Invoice"):
+                    selected_rows['FullName'] = selected_rows['CustomerName'] + ' ' + selected_rows['CustomerSurname']
+                    df = selected_rows.drop_duplicates('FullName')
+                    filename = df['FullName'].sum() + '_' + store_name + '_' + str(df['InvoiceNo'].sum()) + "_" + dt.datetime.now().strftime("%d%m%Y%H%M%S") + ".pdf"
+
+                    pdf_bytes = self.print_invoice(invoice_data=selected_rows, store_name=store_name)
+
+                    st.download_button(
+                        label="Download Invoice",
+                        data=pdf_bytes,
+                        file_name=filename,
+                        mime="application/pdf",
+                    )
+
+    def print_invoice(self, invoice_data, store_name):
+        # === PDF Setup ===
+        buffer = io.BytesIO()
+        invoice_data['FullName'] = invoice_data['CustomerName'] + ' ' + invoice_data['CustomerSurname']
+        df = invoice_data.drop_duplicates('FullName')
+        pdf = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=25,
+            leftMargin=25,
+            topMargin=40,
+            bottomMargin=25,
+        )
+        styles = getSampleStyleSheet()
+        elements = []
+
+        # === HEADER ===
+        # Optional: Add a company logo
+        # If you have a logo file, uncomment this line and set the path
+        # elements.append(Image("logo.png", width=80, height=40))
+        # elements.append(Spacer(1, 12))
+
+        elements.append(Paragraph(f"<b>{store_name.upper()} INVOICE</b>", styles["Title"]))
+        elements.append(Spacer(1, 12))
+
+        company_info = f"""
+        <b>Charne's {store_name}</b><br/>
+        charneypangle0@igmail.com | 079 211 2694 / 060 681 2836
+        """
+        elements.append(Paragraph(company_info, styles["Normal"]))
+        elements.append(Spacer(1, 12))
+
+        # === INVOICE DETAILS ===
+        invoice_meta = f"""
+        <b>Invoice Number:</b> {str(df['InvoiceNo'].sum())}<br/>
+        <b>Date:</b> {dt.datetime.now().strftime('%d %B %Y')}<br/>
+        <b>Customer:</b> {df['FullName'].sum()}<br/>
+        """
+        elements.append(Paragraph(invoice_meta, styles["Normal"]))
+        elements.append(Spacer(1, 16))
+
+        # === TABLE DATA ===
+        table_data = [["Item", "Qty", "Unit Price", "Total"]]
+        for _, row in invoice_data.iterrows():
+            table_data.append([
+                row["StockName"],
+                row["Quantity"],
+                f"R {row['UnitPrice']:.2f}",
+                f"R {row['InvoiceTotal']:.2f}",
+            ])
+
+        total_amount = invoice_data["InvoiceTotal"].sum()
+        table_data.append(["", "", "Total", f"R {total_amount:.2f}"])
+
+        # === TABLE STYLING ===
+        page_width, _ = A4
+        left_margin = 25
+        right_margin = 25
+        usable_width = page_width - left_margin - right_margin
+
+        col_widths = [usable_width * 0.55, usable_width * 0.10, usable_width * 0.15, usable_width * 0.20]
+        table = Table(table_data, colWidths=col_widths, hAlign='LEFT')
+        table.setStyle(
+            TableStyle(
+                [
+                    # Header
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2f2f2")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#333333")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 11),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                    # Body
+                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                    ("FONTSIZE", (0, 1), (-1, -2), 10),
+                    ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    # Alternate row background
+                    ("BACKGROUND", (0, 1), (-1, -2), colors.whitesmoke),
+                    # Total row
+                    ("FONTNAME", (-2, -1), (-1, -1), "Helvetica-Bold"),
+                    ("FONTSIZE", (-2, -1), (-1, -1), 11),
+                    ("LINEABOVE", (0, -1), (-1, -1), 0.5, colors.black),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e8e8e8")),
+                    ("ALIGN", (0, -1), (-1, -1), "CENTER"),
+                ]
+            )
+        )
+
+        elements.append(table)
+        elements.append(Spacer(1, 24))
+
+        # === FOOTER ===
+        elements.append(
+            Paragraph("<i>Thank you for your business!</i>", styles["Italic"])
+        )
+
+        # === BUILD PDF ===
+        pdf.build(elements)
+        buffer.seek(0)
+        return buffer.read()
