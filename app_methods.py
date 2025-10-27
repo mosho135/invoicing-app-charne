@@ -311,7 +311,7 @@ class Production:
                     for item in all_items_ordered.items():
                         i_list = self.invoices["Id"].unique().tolist()
                         i_list.sort()
-                        iid = i_list[-1] + 1
+                        iid = int(i_list[-1]) + 1
                         stocknoselection = new_stock_data.loc[new_stock_data["StockName"] == item[0], "StockNo"].sum()
                         itemqty = item[1][0]
                         unitprice = item[1][1]
