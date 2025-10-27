@@ -378,7 +378,7 @@ class Production:
             # Create a form to edit the status
             new_status = status_update
 
-            btn_col1, btn_col2, btn_col3 = st.columns([0.5, 0.5, 2])
+            btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([0.5, 0.5, 0.5, 1])
             with btn_col1:
                 submit_button = st.button("Paid Invoice")
 
@@ -422,12 +422,15 @@ class Production:
                 st.rerun()
 
             with btn_col3:
+                payment_date_selection = st.date_input(label="Payment Date", min_value=self.today, label_visibility="collapsed")
+
+            with btn_col4:
                 if st.button("Generate Invoice"):
                     selected_rows['FullName'] = selected_rows['CustomerName'] + ' ' + selected_rows['CustomerSurname']
                     df = selected_rows.drop_duplicates('FullName')
                     filename = df['FullName'].sum() + '_' + store_name + '_' + str(df['InvoiceNo'].sum()) + "_" + dt.datetime.now().strftime("%d%m%Y%H%M%S") + ".pdf"
 
-                    pdf_bytes = self.print_invoice(invoice_data=selected_rows, store_name=store_name)
+                    pdf_bytes = self.print_invoice(invoice_data=selected_rows, store_name=store_name, payment_date=payment_date_selection)
 
                     st.download_button(
                         label="Download Invoice",
@@ -436,7 +439,7 @@ class Production:
                         mime="application/pdf",
                     )
 
-    def print_invoice(self, invoice_data, store_name):
+    def print_invoice(self, invoice_data, store_name, payment_date):
         # === PDF Setup ===
         buffer = io.BytesIO()
         invoice_data['FullName'] = invoice_data['CustomerName'] + ' ' + invoice_data['CustomerSurname']
@@ -530,7 +533,7 @@ class Production:
 
         # === FOOTER ===
         elements.append(
-            Paragraph("<i>Thank you for your business!</i>", styles["Italic"])
+                Paragraph(f"<i>Payment is due {payment_date.strftime('%d %B %Y')}</i>", styles["Italic"])
         )
 
         # === BUILD PDF ===
