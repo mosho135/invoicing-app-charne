@@ -89,7 +89,7 @@ class Production:
             df = customer_data.merge(invoice_data, on='CustomerID', how='inner')
             df = df.merge(stock_data, on='StockNo', how='inner')
             payment_df = df.loc[(df['Paid'] == paid) & (df['InvoiceType'] == invoice_type)].copy()
-            display_df = payment_df[['InvoiceNo', 'StockName', 'Quantity', 'UnitPrice', 'InvoiceTotal', 'CustomerName', 'CustomerSurname', 'CustomerCell', 'OrderDate', 'Paid']].copy()
+            display_df = payment_df[['InvoiceNo', 'StockName', 'Quantity', 'UnitPrice', 'InvoiceTotal', 'CustomerName', 'CustomerSurname', 'CustomerCell', 'OrderDate', 'Paid', 'Id']].copy()
             return display_df
 
         not_paid_avon_data = merge_data(self.customers, self.invoices, self.avonstock, "N", 1)
@@ -309,6 +309,9 @@ class Production:
 
 
                     for item in all_items_ordered.items():
+                        i_list = self.invoices["Id"].unique().tolist()
+                        i_list.sort()
+                        iid = i_list[-1] + 1
                         stocknoselection = new_stock_data.loc[new_stock_data["StockName"] == item[0], "StockNo"].sum()
                         itemqty = item[1][0]
                         unitprice = item[1][1]
@@ -323,6 +326,7 @@ class Production:
                             "UnitPrice": [unitprice],
                             "InvoiceTotal": [invoicetotal],
                             "Paid": ["N"],
+                            "Id": [iid],
                         }
 
                         new_job_df = pd.DataFrame(new_job)
@@ -369,7 +373,7 @@ class Production:
 
         # Ensure selected_rows is not empty
         if not selected_rows.empty:  # Check if there's at least one selected row
-            task_id = selected_rows["InvoiceNo"].tolist()
+            task_id = selected_rows["Id"].tolist()
 
             # Create a form to edit the status
             new_status = status_update
@@ -378,11 +382,12 @@ class Production:
             with btn_col1:
                 submit_button = st.button("Paid Invoice")
 
+            # Fix the below error
             if submit_button:
                 for j_id in task_id:
                     if new_status == "Paid":
-                        self.invoices["Paid"] = np.where(self.invoices["InvoiceNo"] == j_id, "Y", self.invoices["Paid"],)
-                        self.invoices.loc[self.invoices["InvoiceNo"] == j_id, "PaymentDate"] = {self.today}
+                        self.invoices["Paid"] = np.where(self.invoices["Id"] == j_id, "Y", self.invoices["Paid"],)
+                        self.invoices.loc[self.invoices["Id"] == j_id, "PaymentDate"] = {self.today}
 
                         self.invoices = self.invoices.astype(str)
                         invoices.update(
@@ -399,7 +404,7 @@ class Production:
             if delete_button:
                 for i_id in task_id:
                     jobs_to_delete = self.invoices.loc[
-                        self.invoices["InvoiceNo"] == i_id
+                        self.invoices["Id"] == i_id
                     ].index
 
                     # Adjust index for Google Sheets (1-based indexing)
