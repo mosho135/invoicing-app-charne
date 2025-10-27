@@ -48,6 +48,7 @@ def fetch_sheet_data(_sheet, name):
 
 
 client = get_gspread_client()
+st.cache_data.clear()
 invoice_workbook = client.open("invoices_app")
 # invoice_workbook = client.open("test_invoices_app")
 invoices = invoice_workbook.worksheet("cp_invoices")
@@ -243,6 +244,7 @@ class Production:
         customer_temp['FullName'] = customer_temp['CustomerName'] + ' ' + customer_temp['CustomerSurname']
         customer_list = customer_temp['FullName'].unique().tolist()
         customer_list.sort()
+
 
         stock_data_list = stock_type['StockName'].unique().tolist()
         stock_data_list.sort()
