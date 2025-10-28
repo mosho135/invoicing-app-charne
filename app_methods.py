@@ -73,11 +73,27 @@ class Production:
         df["OrderDate"] = pd.to_datetime(df["OrderDate"])
         df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
         df["PaymentDate"] = pd.to_datetime(df["PaymentDate"])
+        df["InvoiceNo"] = pd.to_numeric(df["InvoiceNo"])
+        df["CustomerID"] = pd.to_numeric(df["CustomerID"])
+        df["StockNo"] = pd.to_numeric(df["StockNo"])
         self.invoices = df.copy()
-        self.customers = fetch_sheet_data(customers, 'customers')
-        self.avonstock = fetch_sheet_data(avonstock, 'avonstock')
-        self.detergentstock = fetch_sheet_data(detergentstock, 'detergentstock')
-        self.shopstock = fetch_sheet_data(shopstock, 'shopstock')
+
+        customer_df = fetch_sheet_data(customers, 'customers')
+        customer_df["CustomerID"] = pd.to_numeric(customer_df["CustomerID"])
+        customer_df["CustomerCell"] = pd.to_numeric(customer_df["CustomerCell"], errors="coerce")
+        self.customers = customer_df.copy()
+
+        avonstock_df = fetch_sheet_data(avonstock, 'avonstock')
+        avonstock_df["StockNo"] = pd.to_numeric(avonstock_df["StockNo"])
+        self.avonstock = avonstock_df.copy()
+
+        detergentstock_df = fetch_sheet_data(detergentstock, 'detergentstock')
+        detergentstock_df["StockNo"] = pd.to_numeric(detergentstock_df["StockNo"])
+        self.detergentstock = detergentstock_df.copy()
+
+        shopstock_df = fetch_sheet_data(shopstock, 'shopstock')
+        shopstock_df["StockNo"] = pd.to_numeric(shopstock_df["StockNo"])
+        self.shopstock = shopstock_df.copy()
 
     def display_data(self):
         self.format_data()
@@ -90,7 +106,8 @@ class Production:
             df = customer_data.merge(invoice_data, on='CustomerID', how='inner')
             df = df.merge(stock_data, on='StockNo', how='inner')
             payment_df = df.loc[(df['Paid'] == paid) & (df['InvoiceType'] == invoice_type)].copy()
-            display_df = payment_df[['InvoiceNo', 'StockName', 'Quantity', 'UnitPrice', 'InvoiceTotal', 'CustomerName', 'CustomerSurname', 'CustomerCell', 'OrderDate', 'Paid', 'Id']].copy()
+            sorted_df = payment_df.sort_values(by="InvoiceNo", ascending=True)
+            display_df = sorted_df[['InvoiceNo', 'StockName', 'Quantity', 'UnitPrice', 'InvoiceTotal', 'CustomerName', 'CustomerSurname', 'CustomerCell', 'OrderDate', 'Paid', 'Id']].copy()
             return display_df
 
         not_paid_avon_data = merge_data(self.customers, self.invoices, self.avonstock, "N", 1)
@@ -116,26 +133,86 @@ class Production:
         sidebar_menu = sidebar_option_menu(side_options)
 
         if sidebar_menu == 'Avon':
-            avon_navigation = st.radio(label="Navigation", options=["Current Invoices", "Add Invoice", "Add New Customer"], horizontal=True)
+            avon_navigation = st.radio(label="Navigation", options=["Current Invoices", "Add Invoice", "Customers", "Stock"], horizontal=True)
 
             if avon_navigation == "Current Invoices":
                 self.update_job(display_df=not_paid_avon_data, status_update="Paid", store_name="Avon", aggrid_key="avon_data")
             elif avon_navigation == "Add Invoice":
-                self.add_invoice(invoice_type_from_store='Avon', stock_type=self.avonstock, sheet=avonstock)
-            elif avon_navigation == "Add New Customer":
-                self.add_customer()
+                self.add_invoice(invoice_type_from_store='Avon', stock_type=self.avonstock)
+            elif avon_navigation == "Customers":
+                avon_customer_radio = st.radio(label="Customer Navigation", options=["All Customers", "Add New Customers"])
+                if avon_customer_radio == "All Customers":
+                    AgGrid(self.customers, height=400, key="avon_customer_data")
+                else:
+                    self.add_customer()
+            elif avon_navigation == "Stock":
+                avon_stock_radio = st.radio(label="Stock Navigation", options=["All Stock", "Add Stock"])
+                if avon_stock_radio == "All Stock":
+                    AgGrid(self.avonstock, height=400, key="avon_stock_data")
+                else:
+                    self.add_stock(stock_data=self.avonstock, sheet_to_update=avonstock)
+
 
         elif sidebar_menu == 'Detergents':
-            detergent_navigation = st.radio(label="Navigation", options=["Current Invoices", "Add Invoice", "Add New Customer"], horizontal=True)
+            detergent_navigation = st.radio(label="Navigation", options=["Current Invoices", "Add Invoice", "Customers", "Stock"], horizontal=True)
 
             if detergent_navigation == "Current Invoices":
                 self.update_job(display_df=not_paid_detergent_data, status_update="Paid", store_name="Detergents", aggrid_key="detergent_data")
             elif detergent_navigation == "Add Invoice":
-                self.add_invoice(invoice_type_from_store='Detergents', stock_type=self.detergentstock, sheet=detergentstock)
-            elif detergent_navigation == "Add New Customer":
-                self.add_customer()
+                self.add_invoice(invoice_type_from_store='Detergents', stock_type=self.detergentstock)
+            elif detergent_navigation == "Customers":
+                detergent_customer_radio = st.radio(label="Customer Navigation", options=["All Customers", "Add New Customers"])
+                if detergent_customer_radio == "All Customers":
+                    AgGrid(self.customers, height=400, key="detergent_customer_data")
+                else:
+                    self.add_customer()
+            elif detergent_navigation == "Stock":
+                detergent_stock_radio = st.radio(label="Customer Navigation", options=["All Stock", "Add Stock"])
+                if detergent_stock_radio == "All Stock":
+                    AgGrid(self.detergentstock, height=400, key="detergent_stock_data")
+                else:
+                    self.add_stock(stock_data=self.detergentstock, sheet_to_update=detergentstock)
+
+
         elif sidebar_menu == 'Koep en Loep':
             st.write('Koep en Loep')
+
+    def add_stock(self, stock_data, sheet_to_update):
+        st.subheader("Add New Stock")
+        with st.form("stock_form", clear_on_submit=True):
+            fr_col1, fr_col2 = st.columns(2)
+            with fr_col1:
+                stockname = st.text_input("Stock Name")
+
+            stock_submit = st.form_submit_button("Add Stock")
+
+            stock_list = stock_data['StockName'].unique().tolist()
+
+            if stock_submit:
+                if stockname.strip() not in stock_list:
+                    self.format_data()
+                    j_list = stock_data["StockNo"].unique().tolist()
+                    j_list.sort()
+                    wid = int(j_list[-1]) + 1
+
+                    new_job = {
+                        "StockNo": [wid],
+                        "StockName": [stockname],
+                    }
+
+                    new_job_df = pd.DataFrame(new_job)
+                    stock_data = pd.concat([stock_data, new_job_df], ignore_index=True)
+                    stock_data = stock_data.astype(str)
+                    sheet_to_update.update(
+                        [stock_data.columns.values.tolist()] + stock_data.values.tolist()
+                    )
+                    st.success(f"Stock item {wid} added!")
+                    st.cache_data.clear()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("Stock Item already exists")
+
 
     def add_customer(self):
         # Add a new job
@@ -203,7 +280,7 @@ class Production:
                 time.sleep(1)
                 st.rerun()
 
-    def add_invoice(self, invoice_type_from_store=None, stock_type=None, sheet=None):
+    def add_invoice(self, invoice_type_from_store=None, stock_type=None):
         st.subheader("Add New Invoice")
 
         invoice_type_dict = {
@@ -215,22 +292,13 @@ class Production:
         def create_number_of_items(total_items, stock_data_list):
             item_list = {}
             for _ in range(int(total_items)):
-                tr_col1, tr_col2, tr_col3, tr_col4 = st.columns(4)
-
-                radio_key = f"item_type{_}"
-                if radio_key not in st.session_state:
-                    st.session_state[radio_key] = "New Item"
+                tr_col1, tr_col2, tr_col3 = st.columns(3)
 
                 with tr_col1:
-                    item_multiselect = st.radio(label="Stock Selection", options=["New Item", "Existing Item"], horizontal=True, key=radio_key)
+                    item_selected = st.selectbox(label="Exisiting Item Ordered", options=stock_data_list, key=f"existing_item_{_}")
                 with tr_col2:
-                    if st.session_state[radio_key] == "New Item":
-                        item_selected = st.text_input("New Item Ordered", key=f"new_item_{_}")
-                    else:
-                        item_selected = st.selectbox(label="Exisiting Item Ordered", options=stock_data_list, key=f"existing_item_{_}")
-                with tr_col3:
                     item_qty = st.number_input("Quantity", min_value=1, step=1, key=f"item_qty_{_}")
-                with tr_col4:
+                with tr_col3:
                     item_value = st.number_input("Price", key=f"price{_}")
 
                 item_list[item_selected] = [item_qty, item_value]
@@ -268,36 +336,6 @@ class Production:
 
                 all_items_ordered = create_number_of_items(total_items=total_items_ordered, stock_data_list=stock_data_list)
 
-                def add_to_stock(items_ordered, stock_data_list, stock_data, sheet_to_update, stock_name):
-                    for item in items_ordered.items():
-                        if item[0] not in stock_data_list:
-                            j_list = stock_data["StockNo"].unique().tolist()
-                            j_list.sort()
-                            wid = int(j_list[-1]) + 1
-
-                            new_stock = {
-                                "StockNo": [wid],
-                                "StockName": [item[0]]
-                            }
-
-                            new_job_df = pd.DataFrame(new_stock)
-                            stock_data = pd.concat([stock_data, new_job_df], ignore_index=True)
-                            stock_data = stock_data.astype(str)
-                            sheet_to_update.update(
-                                [stock_data.columns.values.tolist()] + stock_data.values.tolist()
-                            )
-
-                            st.cache_data.clear()
-
-                    if stock_name == "Avon":
-                        self.avonstock = fetch_sheet_data(avonstock, 'avonstock')
-                        return self.avonstock
-                    elif stock_name == "Detergents":
-                        self.detergentstock = fetch_sheet_data(detergentstock, 'detergentstock')
-                        return self.detergentstock
-                    else:
-                        self.shopstock = fetch_sheet_data(shopstock, 'shopstock')
-                        return self.shopstock
 
                 if st.button("Add Invoice"):
                     self.format_data()
@@ -306,15 +344,13 @@ class Production:
                     wid = j_list[-1] + 1
 
                     customerid_selection = customer_temp.loc[customer_temp["FullName"] == customerfullname, "CustomerID"].sum()
-                    new_stock_data = add_to_stock(items_ordered=all_items_ordered, stock_data_list=stock_data_list, stock_data=stock_type, sheet_to_update=sheet, stock_name=invoice_type_from_store)
                     invoice_type = invoice_type_dict[invoice_type_from_store]
-
 
                     for item in all_items_ordered.items():
                         i_list = self.invoices["Id"].unique().tolist()
                         i_list.sort()
                         iid = int(i_list[-1]) + 1
-                        stocknoselection = new_stock_data.loc[new_stock_data["StockName"] == item[0], "StockNo"].sum()
+                        stocknoselection = stock_type.loc[stock_type["StockName"] == item[0], "StockNo"].sum()
                         itemqty = item[1][0]
                         unitprice = item[1][1]
                         invoicetotal = unitprice * itemqty
